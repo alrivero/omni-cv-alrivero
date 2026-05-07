@@ -1,27 +1,10 @@
 """
 =====================================================================
  * MIT License
- * 
+ *
  * Copyright (c) 2025 Omni Instrument Inc.
- * 
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- * ===================================================================== 
+ * ...
+ * =====================================================================
 """
 
 import os
@@ -30,9 +13,10 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
+    OpaqueFunction,
     RegisterEventHandler,
+    Shutdown,
     TimerAction,
-    Shutdown
 )
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
@@ -41,24 +25,79 @@ from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
 
 
-def generate_launch_description():
+_HOME = os.path.expanduser("~")
 
-    home = os.path.expanduser("~")
-    default_config_path = os.path.join(home, "ros2_ws", "src", "tsdf_saver", "config", "custom.yaml")
-    default_bag_path = os.path.join(home, "dataset", "VIO_stripped")
-    qos_yaml = os.path.join(home, "dataset", "qos_override.yaml")
+_CONFIG_MAP = {
+    "default": os.path.join(_HOME, "ros2_ws", "src", "tsdf_saver", "config", "custom.yaml"),
+    "waft":    os.path.join(_HOME, "ros2_ws", "src", "tsdf_saver", "config", "waft.yaml"),
+    "quality": os.path.join(_HOME, "ros2_ws", "src", "tsdf_saver", "config", "quality.yaml"),
+}
 
 
-    bag_path = LaunchConfiguration("bag")
-    save_threshold = LaunchConfiguration("save_time_threshold")
-    config_file_path = LaunchConfiguration("dbtsdf_config")
+def launch_setup(context, *_):
+
+    depth_method   = LaunchConfiguration("depth_method").perform(context)
+    config_preset  = LaunchConfiguration("config_preset").perform(context)
+    bag_rate       = LaunchConfiguration("bag_rate").perform(context)
+    bag_path       = LaunchConfiguration("bag").perform(context)
+    save_threshold = LaunchConfiguration("save_time_threshold").perform(context)
+    qos_yaml       = os.path.join(_HOME, "dataset", "qos_override.yaml")
+
+    config_path = _CONFIG_MAP.get(config_preset, _CONFIG_MAP["default"])
 
     # ==============================================================
-    #  Stereo Depth
+    #  Startup banner
     # ==============================================================
-    """
-    YOUR ROS NODE OR COMPOSABLE NODE GOES HERE
-    """
+    B, R = "\033[1m", "\033[0m"
+    print(f"\n{B}{'=' * 54}{R}")
+    print(f"{B}  Depth Method  : {depth_method.upper()}{R}")
+    print(f"{B}  Config Preset : {config_preset.upper()}  →  {os.path.basename(config_path)}{R}")
+    print(f"{B}  Bag Rate      : {bag_rate}x{R}")
+    print(f"{B}{'=' * 54}{R}\n")
+
+    # ==============================================================
+    #  Stereo Depth Nodes
+    # ==============================================================
+
+    _depth_nodes = {
+        "sgbm": Node(
+            package="stereo_depth",
+            executable="stereo_depth_node",
+            name="stereo_depth_node",
+            output="screen",
+            parameters=[{"use_sim_time": True}],
+        ),
+        "waft": Node(
+            package="waft_stereo",
+            executable="waft_stereo_node",
+            name="waft_stereo_node",
+            output="screen",
+            parameters=[{
+                "use_sim_time": True,
+                "config_file": "configs/SynLarge/DAv2L-5.yaml",
+                "hf_filename": "SynLarge/DAv2L-5.pth",
+            }],
+        ),
+        "unidepth": Node(
+            package="unidepth_ros",
+            executable="unidepth_node",
+            name="unidepth_node",
+            output="screen",
+            parameters=[{"use_sim_time": True}],
+        ),
+    }
+    depth_node = _depth_nodes[depth_method]
+
+    depth_selector_node = Node(
+        package="waft_stereo",
+        executable="depth_selector_node",
+        name="depth_selector",
+        output="screen",
+        parameters=[{
+            "use_sim_time": True,
+            "method": depth_method,
+        }],
+    )
 
     # ==============================================================
     #  PointCloud Node (XYZ)
@@ -70,14 +109,14 @@ def generate_launch_description():
         name="depth_image_pointcloud",
         parameters=[
             {"use_sim_time": True},
-            {"queue_size": 20}
+            {"queue_size": 20},
         ],
         remappings=[
             ("/zed/zedxm/depth/camera_info", "/zed/zedxm/depth/depth_registered/camera_info"),
             ("image_rect", "/zed/zedxm/depth/depth_registered"),
-            ("points", "/stereo/points")
+            ("points", "/stereo/points"),
         ],
-        extra_arguments=[{'use_intra_process_comms': True}]
+        extra_arguments=[{"use_intra_process_comms": True}],
     )
 
     # ==============================================================
@@ -90,30 +129,26 @@ def generate_launch_description():
         name="tsdf_saver",
         parameters=[
             {"use_sim_time": True},
-            {"save_time_threshold": save_threshold}
+            {"save_time_threshold": float(save_threshold)},
         ],
-        remappings=[
-            ("cloud_in", "/stereo/points")
-        ],
-        extra_arguments=[{'use_intra_process_comms': True}]
+        remappings=[("cloud_in", "/stereo/points")],
+        extra_arguments=[{"use_intra_process_comms": True}],
     )
 
     # ==============================================================
-    #  DB-TSDF Node (Normal ROS2 Node)
+    #  DB-TSDF Node
     # ==============================================================
 
     db_tsdf_node = Node(
-        package='db_tsdf',
-        executable='db_tsdf_node',
-        name='db_tsdf_node',
-        output='screen',
+        package="db_tsdf",
+        executable="db_tsdf_node",
+        name="db_tsdf_node",
+        output="screen",
         parameters=[
-            {'use_sim_time': True},
-            config_file_path
+            {"use_sim_time": True},
+            config_path,
         ],
-        remappings=[
-            ("cloud", "/tsdf/local_cloud")
-        ]
+        remappings=[("cloud", "/tsdf/local_cloud")],
     )
 
     # ==============================================================
@@ -125,73 +160,115 @@ def generate_launch_description():
         namespace="",
         package="rclcpp_components",
         executable="component_container_mt",
-        arguments=['--use_multi_threaded_executor', '--ros-args', '--log-level', 'info'],
+        arguments=["--use_multi_threaded_executor", "--ros-args", "--log-level", "info"],
         output="screen",
         parameters=[{"use_sim_time": True}],
         composable_node_descriptions=[
             pointcloud_component,
             tsdf_saver_component,
-        ]
+        ],
     )
 
     # ==============================================================
-    #  Bag Playback Process
+    #  Bag Playback
     # ==============================================================
 
+    # Exclude the bag's pre-recorded ZED depth: it would publish directly to
+    # /zed/zedxm/depth/depth_registered and compete with our computed depth,
+    # corrupting whichever pipeline method we've chosen.
     bag_proc = ExecuteProcess(
         cmd=[
             "ros2", "bag", "play",
             bag_path,
             "--clock",
-            "--qos-profile-overrides-path", qos_yaml
+            "--rate", bag_rate,
+            "--qos-profile-overrides-path", qos_yaml,
+            "--topics",
+            "/tf",
+            "/tf_static",
+            "/zed/zedxm/left/color/rect/image",
+            "/zed/zedxm/left/color/rect/image/camera_info",
+            "/zed/zedxm/left/gray/rect/image",
+            "/zed/zedxm/left/gray/rect/image/camera_info",
+            "/zed/zedxm/right/color/rect/image",
+            "/zed/zedxm/right/color/rect/image/camera_info",
+            "/zed/zedxm/right/gray/rect/image",
+            "/zed/zedxm/right/gray/rect/image/camera_info",
+            "/zed/zedxm/odom",
         ],
-        output="screen"
+        output="screen",
     )
 
     # ==============================================================
-    #  Shutdown logic: 20 seconds after bag finishes
+    #  Save mesh then shutdown once bag finishes
     # ==============================================================
 
-    delayed_shutdown = RegisterEventHandler(
+    save_proc = ExecuteProcess(
+        cmd=['ros2', 'service', 'call', '/save_grid_mesh', 'std_srvs/srv/Trigger', '{}'],
+        output='screen',
+    )
+
+    # After the bag finishes, wait for the depth queue to drain before saving.
+    # WAFT is slow (~600 ms/frame × 566 frames) so needs up to 400 s to catch up.
+    drain_time = 400.0 if depth_method == "waft" else 60.0
+
+    save_and_shutdown = RegisterEventHandler(
         OnProcessExit(
             target_action=bag_proc,
             on_exit=[
                 TimerAction(
-                    period=20.0,
-                    actions=[
-                        Shutdown(reason="Bag finished; shutting down after 20 seconds")
-                    ]
-                )
-            ]
+                    period=drain_time,
+                    actions=[save_proc],
+                ),
+                TimerAction(
+                    period=drain_time + 30.0,
+                    actions=[Shutdown(reason="Mesh saved; shutting down.")],
+                ),
+            ],
         )
     )
 
-    # ==============================================================
-    #  Launch Description
-    # ==============================================================
+    return [
+        depth_node,
+        depth_selector_node,
+        bag_proc,
+        container,
+        db_tsdf_node,
+        save_and_shutdown,
+    ]
+
+
+def generate_launch_description():
+
+    default_bag_path = os.path.join(_HOME, "dataset", "VIO_stripped")
 
     return LaunchDescription([
 
         DeclareLaunchArgument(
             "bag",
             default_value=default_bag_path,
-            description="Path to rosbag directory"
+            description="Path to rosbag directory",
         ),
-
         DeclareLaunchArgument(
             "save_time_threshold",
-            default_value="1765058989.0",
-            description="When pointcloud time exceeds this value, TSDF saver triggers"
+            default_value="9999999999.0",
+            description="When pointcloud time exceeds this value, TSDF saver triggers (default: never)",
         ),
-
         DeclareLaunchArgument(
-            "dbtsdf_config",
-            default_value=default_config_path,
-            description="Path to DB-TSDF config directory"
+            "depth_method",
+            default_value="sgbm",
+            description='Depth source: "sgbm" or "waft"',
+        ),
+        DeclareLaunchArgument(
+            "config_preset",
+            default_value="default",
+            description='TSDF config preset: "default" (custom.yaml), "waft" (waft.yaml), or "quality" (quality.yaml)',
+        ),
+        DeclareLaunchArgument(
+            "bag_rate",
+            default_value="1.0",
+            description="Bag playback rate multiplier (e.g. 0.2 for WAFT, 1.0 for SGBM)",
         ),
 
-        bag_proc,
-        container,
-        db_tsdf_node,
-        delayed_shutdown
+        OpaqueFunction(function=launch_setup),
     ])

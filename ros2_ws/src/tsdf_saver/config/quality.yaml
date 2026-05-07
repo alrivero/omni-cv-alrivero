@@ -1,0 +1,33 @@
+db_tsdf_node:
+  ros__parameters:
+
+    # --- Input/Output & TF Parameters ---
+    in_cloud: '/stereo/points'
+    odom_frame_id: 'odom'
+    use_tf: True
+    use_tf_topic: False
+    in_tf_topic: '/gt_icp/transform'
+
+    # --- Point Cloud Filtering Parameters ---
+    pc_downsampling: 3                   # use 1 in 3 points — keeps density without OOM
+    min_range: 0.1
+    max_range: 5.0                       # 5cm baseline: beyond 5m stereo depth is unreliable
+
+    # --- TSDF Grid Definition ---
+    tdf_grid_res: 0.05
+    tdf_max_cells: 300000.0
+
+    tdfGridSizeX_low: -50.0
+    tdfGridSizeX_high: 50.0
+    tdfGridSizeY_low: -50.0
+    tdfGridSizeY_high: 50.0
+    tdfGridSizeZ_low: -10.0
+    tdfGridSizeZ_high: 10.0
+
+    # --- Integration Kernel Parameters ---
+    kernel_size:   5
+    occ_min_hits:  25                    # conservative enough to reject noise, permissive enough to keep real geometry
+    bins_az:       360
+    bins_el:       360
+    shadow_radius: 3
+    distance_mode: "L2"

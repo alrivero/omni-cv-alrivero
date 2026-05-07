@@ -43,7 +43,7 @@ declare -A DOCKER_BUILDS=(
 # python  → cyclone
 
 declare -A PARENTS=(
-  ["${BASE_IMAGE}"]="nvcr.io/nvidia/tensorrt:25.11-py3"
+  ["${BASE_IMAGE}"]="nvcr.io/nvidia/tensorrt:25.12-py3"
   ["${ROS_IMAGE}"]="${BASE_IMAGE}"
   ["${CYCLONE_IMAGE}"]="${ROS_IMAGE}"
   ["${PYTHON_IMAGE}"]="${CYCLONE_IMAGE}"

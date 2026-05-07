@@ -6,3 +6,22 @@ dataset/VIO_stripped
 dataset/meshes
 .cache
 metrics.txt
+
+# Claude Code
+.claude/
+
+# Local files
+*.pdf
+*.png
+*.jpg
+*.jpeg
+output.zip
+output/
+
+# External dependencies (install separately)
+ros2_ws/external/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
